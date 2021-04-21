@@ -9,6 +9,8 @@ speed, RPM, temperature, etc.
 The repo has some examples using an ESP8266 to drive LEDs based on RPM. Two
 games are supported: "Project Cars 2" and "F1 2020".
 
+![NodeMCU ESP8266 with 16 RGB and 32x8 LED matrix](./images/pcars2ledmatrix.gif)
+
 ## Dependencies
 
 ### NodeMCU 1.0 Pin Map
@@ -27,6 +29,12 @@ https://github.com/tzapu/WiFiManager
 This library has ESP8266 specific optimizations WS2812 LEDs.
 
 https://github.com/Makuna/NeoPixelBus
+
+### MAX72xx Library
+
+This library is used to drive the 32x8 LED matrix.
+
+https://github.com/MajicDesigns/MD_MAX72XX
 
 ### The Project Cars 2 API
 
@@ -49,7 +57,7 @@ Quantity    |Description
 3           |Wires
 n/a         |Solder
 
-Connection Table
+Connection Table for RGB LEDs
 
 NodeMCU     |WS2812     |Description
 ------------|-----------|-----------
@@ -66,15 +74,38 @@ of LEDs is limited by the ESP8266 board 3.3V voltage regulator.
 The two 8 RGB sticks are soldered together to form one 16 RGB stick. Flexible
 strips and rings can be used instead.
 
-## Project Cars 2 LEDs Example
+Connection Table for 32x8 LED matrix
 
-pcars2/pcars2leds/pcars2leds.ino
+NodeMCU ESP8266    |LED Matrix  |Description
+-------------------|------------|------------
+3V3                |VCC         |3.3 Volt power
+GND                |GND         |Ground
+D7,GPIO#13,HMOSI   |DIN         |SPI output
+D8,GPIO#15,HCS     |CS          |SPI select
+D5,GPIO#14,HSCLK   |CLK         |SPI clock
+
+## Project Cars 2 RGB LEDs Example
+
+./pcars2/pcars2leds/pcars2leds.ino
 
 Drive 16 WS2812 RGB LEDs based on engine RPM.
 
-## F1 2020 LEDs Example
+## Project Cars 2 LED Matrix Example
 
-f12020/f12020leds/f12020leds.ino
+./pcars2/pcars2matrix/pcars2matrix.ino
+
+Drive 32x8 LED matrix based on gear and KPH. Also drive 16 WS2812 RGB LEDs
+based on engine RPM.
+
+## F1 2020 RGB LED Example
+
+./f12020/f12020leds/f12020leds.ino
 
 Drive 16 WS2812 RGB LEDs based on rev lights percent.
 
+## F1 2020 LED Matrix Example
+
+./f12020/f12020matrix/f12020matrix.ino
+
+Drive 32x8 LED matrix based on gear and KPH. Also drive 16 WS2812 RGB LEDs
+based on engine RPM.

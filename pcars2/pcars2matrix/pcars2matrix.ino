@@ -40,7 +40,22 @@ SOFTWARE.
 #include <WiFiUdp.h>
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 #include <NeoPixelBus.h>  // Install using IDE Library manager
+#include <MD_MAX72xx.h>   // Install using the IDE Library manager
 
+// 4 8x8 LED matrix using MAX7219 SPI interface
+// Define the number of devices we have in the chain and the hardware interface
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES	4
+
+// For NodeMCU ESP8266
+#define CLK_PIN   D5  // or SCK
+#define DATA_PIN  D7  // or MOSI
+#define CS_PIN    D8  // or SS
+
+// SPI hardware interface
+MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
+
+// 16 WS281x RGB LEDs
 const uint16_t PixelCount = 16;
 const uint8_t PixelPin = 3;  // make sure to set this to the correct pin, ignored for Esp8266
 #define colorSaturation 255
@@ -68,11 +83,84 @@ uint8_t packetBuffer[SMS_UDP_MAX_PACKETSIZE]; //buffer to hold incoming packet,
 
 WiFiUDP Udp;
 
+void scrollText(const char *p, size_t delay_ms)
+{
+  uint8_t charWidth;
+  uint8_t cBuf[8];
+
+  mx.clear();
+
+  while (*p != '\0')
+  {
+    charWidth = mx.getChar(*p++, sizeof(cBuf), cBuf);
+
+    for (uint8_t i = 0; i <= charWidth; i++)	// allow space between characters
+    {
+      mx.transform(MD_MAX72XX::TSL);
+      if (i < charWidth)
+        mx.setColumn(0, cBuf[i]);
+      delay(delay_ms);
+    }
+  }
+}
+
+// Draw speed on right side of LED matrix
+void draw_speed(float speed)
+{
+  uint8_t charWidth;
+  uint8_t cBuf[8];
+  char speed_cstr[8];
+
+  int speed_len = snprintf(speed_cstr, sizeof(speed_cstr), "%.0f", speed);
+  int cols = 0;
+  while (speed_len > 0) {
+    speed_len--;
+    charWidth = mx.getChar(speed_cstr[speed_len], sizeof(cBuf), cBuf);
+    cols += charWidth;
+    mx.setBuffer(cols, charWidth, cBuf);
+    cols++; // Add inter-character spacing
+  }
+}
+
+const char * const GEAR_NAMES[16] = {
+  "N",  // Neutral
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "R",  // Reverse
+};
+
+// Draw gear on left side of LED matrix
+void draw_gear(const char *p)
+{
+  uint8_t charWidth;
+  int col = 31;
+  while (*p != '\0')
+  {
+    charWidth = mx.setChar(col, *p++);
+    col -= charWidth + 1;
+  }
+}
+
 void setup() {
   WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
   Serial.begin(115200);
+  // Init 16 RGB LEDs
   strip.Begin();
   strip.Show();
+  // Init 4 8x8 LED matrix
+  mx.begin();
 
   //WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wm;
@@ -100,27 +188,10 @@ void setup() {
     Serial.println(WiFi.localIP());
     Serial.printf("UDP server on port %d\n", SMS_UDP_PORT);
     Udp.begin(SMS_UDP_PORT);
+    // Display my IP address.
+    scrollText(WiFi.localIP().toString().c_str(), 50);
   }
 }
-
-const char * const GEAR_NAMES[16] = {
-  "N",  // Neutral
-  "1",
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
-  "10",
-  "11",
-  "12",
-  "13",
-  "14",
-  "R",  // Reverse
-};
 
 // This determines the LED colors.
 const RgbColor RPM_COLORS[16] = {
@@ -177,9 +248,22 @@ void loop() {
             Serial.printf("sGear %u\n", currentGear);
             Serial.printf("Gear %s\n", GEAR_NAMES[currentGear]);
             Serial.printf("sNumGears %u\n", carPhysics->sGearNumGears >> 4);
+            Serial.printf("sRpm %u sMaxRpm %u\n", carPhysics->sRpm, carPhysics->sMaxRpm);
 #endif
-            //Serial.printf("sRpm %u sMaxRpm %u\n", carPhysics->sRpm, carPhysics->sMaxRpm);
             show_rpm(carPhysics->sRpm, carPhysics->sMaxRpm);
+
+            float speed_kph = trunc(carPhysics->sSpeed * (3600.0f/1000.0f) + 0.5f);
+            static float last_speed_kph = -1.0f;
+            uint8_t currentGear = carPhysics->sGearNumGears & 0x0F;
+            static uint8_t last_gear = 255;
+            if ((speed_kph != last_speed_kph) ||
+                (currentGear != last_gear)) {
+              mx.clear();
+              draw_speed(speed_kph);
+              draw_gear(GEAR_NAMES[currentGear]);
+              last_speed_kph = speed_kph;
+              last_gear = currentGear;
+            }
           }
           break;
         case eRaceDefinition:
