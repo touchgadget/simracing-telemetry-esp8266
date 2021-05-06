@@ -32,11 +32,18 @@ SOFTWARE.
  * This program has virtually no error checking so use at your own risk.
  */
 
+#define DEBUG_PRINT (0)
+
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <WebSocketsServer.h>
+#include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 #include <NeoPixelBus.h>  // Install using IDE Library manager
-#include <MD_MAX72xx.h>   // Install using the IDE Library manager
+#include <MD_MAX72xx.h>   // Install using IDE Library manager
+#include <ArduinoJson.h>
+#include "telemetry_html.h"
 
 // 4 8x8 LED matrix using MAX7219 SPI interface
 // Define the number of devices we have in the chain and the hardware interface
@@ -66,6 +73,10 @@ RgbColor blue(0, 0, colorSaturation);
 RgbColor white(colorSaturation);
 RgbColor black(0);
 
+ESP8266WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
+
+/* F1 2020 UDP API ****************************************************/
 const uint16_t F1_UDP_PORT = 20777;
 
 // All the F1 2020 structs must be packed.
@@ -173,10 +184,89 @@ struct PacketCarStatusData
 
   CarStatusData    m_carStatusData[22];
 };
+
+struct CarSetupData
+{
+  uint8_t   m_frontWing;                // Front wing aero
+  uint8_t   m_rearWing;                 // Rear wing aero
+  uint8_t   m_onThrottle;               // Differential adjustment on throttle (percentage)
+  uint8_t   m_offThrottle;              // Differential adjustment off throttle (percentage)
+  float     m_frontCamber;              // Front camber angle (suspension geometry)
+  float     m_rearCamber;               // Rear camber angle (suspension geometry)
+  float     m_frontToe;                 // Front toe angle (suspension geometry)
+  float     m_rearToe;                  // Rear toe angle (suspension geometry)
+  uint8_t   m_frontSuspension;          // Front suspension
+  uint8_t   m_rearSuspension;           // Rear suspension
+  uint8_t   m_frontAntiRollBar;         // Front anti-roll bar
+  uint8_t   m_rearAntiRollBar;          // Front anti-roll bar
+  uint8_t   m_frontSuspensionHeight;    // Front ride height
+  uint8_t   m_rearSuspensionHeight;     // Rear ride height
+  uint8_t   m_brakePressure;            // Brake pressure (percentage)
+  uint8_t   m_brakeBias;                // Brake bias (percentage)
+  float     m_rearLeftTyrePressure;     // Rear left tyre pressure (PSI)
+  float     m_rearRightTyrePressure;    // Rear right tyre pressure (PSI)
+  float     m_frontLeftTyrePressure;    // Front left tyre pressure (PSI)
+  float     m_frontRightTyrePressure;   // Front right tyre pressure (PSI)
+  uint8_t   m_ballast;                  // Ballast
+  float     m_fuelLoad;                 // Fuel load
+};
+
+struct PacketCarSetupData
+{
+  PacketHeader    m_header;            // Header
+
+  CarSetupData    m_carSetups[22];
+};
+
+struct CarMotionData
+{
+    float         m_worldPositionX;           // World space X position
+    float         m_worldPositionY;           // World space Y position
+    float         m_worldPositionZ;           // World space Z position
+    float         m_worldVelocityX;           // Velocity in world space X
+    float         m_worldVelocityY;           // Velocity in world space Y
+    float         m_worldVelocityZ;           // Velocity in world space Z
+    int16_t       m_worldForwardDirX;         // World space forward X direction (normalised)
+    int16_t       m_worldForwardDirY;         // World space forward Y direction (normalised)
+    int16_t       m_worldForwardDirZ;         // World space forward Z direction (normalised)
+    int16_t       m_worldRightDirX;           // World space right X direction (normalised)
+    int16_t       m_worldRightDirY;           // World space right Y direction (normalised)
+    int16_t       m_worldRightDirZ;           // World space right Z direction (normalised)
+    float         m_gForceLateral;            // Lateral G-Force component
+    float         m_gForceLongitudinal;       // Longitudinal G-Force component
+    float         m_gForceVertical;           // Vertical G-Force component
+    float         m_yaw;                      // Yaw angle in radians
+    float         m_pitch;                    // Pitch angle in radians
+    float         m_roll;                     // Roll angle in radians
+};
+
+struct PacketMotionData
+{
+    PacketHeader    m_header;               	// Header
+
+    CarMotionData   m_carMotionData[22];    	// Data for all cars on track
+
+    // Extra player car ONLY data
+    float         m_suspensionPosition[4];      // Note: All wheel arrays have the following order:
+    float         m_suspensionVelocity[4];      // RL, RR, FL, FR
+    float         m_suspensionAcceleration[4];	// RL, RR, FL, FR
+    float         m_wheelSpeed[4];           	// Speed of each wheel
+    float         m_wheelSlip[4];               // Slip ratio for each wheel
+    float         m_localVelocityX;         	// Velocity in local space
+    float         m_localVelocityY;         	// Velocity in local space
+    float         m_localVelocityZ;         	// Velocity in local space
+    float         m_angularVelocityX;		    // Angular velocity x-component
+    float         m_angularVelocityY;           // Angular velocity y-component
+    float         m_angularVelocityZ;           // Angular velocity z-component
+    float         m_angularAccelerationX;       // Angular velocity x-component
+    float         m_angularAccelerationY;	    // Angular velocity y-component
+    float         m_angularAccelerationZ;       // Angular velocity z-component
+    float         m_frontWheelsAngle;           // Current front wheels angle in radians
+};
 #pragma pack(pop)
 
 // buffer for receiving data
-uint8_t packetBuffer[UDP_TX_PACKET_MAX_SIZE]; //buffer to hold incoming packet,
+uint8_t packetBuffer[4096]; //buffer to hold incoming packet,
 
 WiFiUDP Udp;
 
@@ -238,6 +328,14 @@ const char * const GEAR_NAMES[16] = {
   "R",  // Reverse
 };
 
+// Fuel mix - 0 = lean, 1 = standard, 2 = rich, 3 = max
+const char * const FUEL_MIX_NAMES[4] = {
+  "Lean",
+  "Standard",
+  "Rich",
+  "Max",
+};
+
 // Draw gear on left side of LED matrix
 void draw_gear(const char *p)
 {
@@ -248,6 +346,97 @@ void draw_gear(const char *p)
     charWidth = mx.setChar(col, *p++);
     col -= charWidth + 1;
   }
+}
+
+/* web and web socket server ***************************************/
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length)
+{
+  if (DEBUG_PRINT) Serial.printf("webSocketEvent(%d, %d, ...)\r\n", num, type);
+  switch(type) {
+    case WStype_DISCONNECTED:
+      if (DEBUG_PRINT) Serial.printf("[%u] Disconnected!\r\n", num);
+      break;
+    case WStype_CONNECTED:
+        if (DEBUG_PRINT) {
+          IPAddress ip = webSocket.remoteIP(num);
+          Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\r\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+        }
+        // Send the last values.
+        send_car_telemetry(NULL);
+        send_car_status(NULL);
+        send_car_setup(NULL);
+        send_car_motion(NULL);
+      break;
+    case WStype_TEXT:
+      {
+        if (DEBUG_PRINT) Serial.printf("[%u] get Text: %s\r\n", num, payload);
+
+#if 0
+        // Maybe: Parse touch/mouse events for button presses/releases???
+        StaticJsonDocument<64> doc;
+
+        DeserializationError error = deserializeJson(doc, payload, length);
+
+        if (error) {
+          if (DEBUG_PRINT) {
+            Serial.print(F("deserializeJson() failed: "));
+            Serial.println(error.f_str());
+          }
+          return;
+        }
+#endif
+      }
+      break;
+    case WStype_BIN:
+      if (DEBUG_PRINT) {
+        Serial.printf("[%u] get binary length: %u\r\n", num, length);
+        hexdump(payload, length);
+        // echo data back to browser
+        webSocket.sendBIN(num, payload, length);
+      }
+      break;
+    default:
+      if (DEBUG_PRINT) Serial.printf("Invalid WStype [%d]\r\n", type);
+      break;
+  }
+}
+
+void handleRoot(void){
+  server.send(200, "text/html", TELEMETRY_HTML);
+}
+
+void handleNotFound(void) {
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET)?"GET":"POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i=0; i < server.args(); i++)
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  server.send(404, "text/plain", message);
+}
+
+void web_server_setup(void) {
+  // Start web socket server
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
+  // Setup the root web page.
+  server.on("/", handleRoot);
+  // Set up an error page.
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void web_server_loop(void) {
+  webSocket.loop();
+  server.handleClient();  // Handle any web activity
 }
 
 void setup() {
@@ -284,9 +473,10 @@ void setup() {
     Serial.print("Connected! IP address: ");
     Serial.println(WiFi.localIP());
     Serial.printf("UDP server on port %d\n", F1_UDP_PORT);
-    Udp.begin(F1_UDP_PORT);
     // Display my IP address.
     scrollText(WiFi.localIP().toString().c_str(), 50);
+    Udp.begin(F1_UDP_PORT);
+    web_server_setup();
   }
 }
 
@@ -315,6 +505,135 @@ void draw_rev(int rev_light_percent)
   }
 }
 
+void send_car_status(struct CarStatusData *status) {
+  static struct CarStatusData last_status;
+  char json[256+1];
+  int len;
+  static const char json_format[] =
+    R"====({"type":2,"front_brake_bias":%u,"fuel_mix":"%s","fuel_remaining_laps":%.2f})====";
+  static const char json_format_ers[] =
+    R"====({"type":3,"ers_store_energy":%.2f,"ers_deploy_mode":%u,"ers_deployed_this_lap":%.2f})====";
+  if (status == NULL) {
+    len = snprintf(json, sizeof(json), json_format, last_status.m_frontBrakeBias, \
+      FUEL_MIX_NAMES[last_status.m_fuelMix & 0x3], last_status.m_fuelRemainingLaps);
+      // Broadcast sends to all connected clients.
+    if (len > 0) webSocket.broadcastTXT(json, len);
+    len = snprintf(json, sizeof(json), json_format_ers, last_status.m_ersStoreEnergy, \
+      last_status.m_ersDeployMode, last_status.m_ersDeployedThisLap);
+    if (len > 0) webSocket.broadcastTXT(json, len);
+  }
+  else {
+    if (memcmp(&last_status, status, sizeof(last_status))) {
+      len = snprintf(json, sizeof(json), json_format, status->m_frontBrakeBias, \
+          FUEL_MIX_NAMES[status->m_fuelMix & 0x03], status->m_fuelRemainingLaps);
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      len = snprintf(json, sizeof(json), json_format_ers, status->m_ersStoreEnergy, \
+        status->m_ersDeployMode, status->m_ersDeployedThisLap);
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      memcpy(&last_status, status, sizeof(last_status));
+    }
+  }
+}
+
+void send_car_telemetry(struct CarTelemetryData *telemetry) {
+  static struct CarTelemetryData last_telemetry;
+  char json[256+1];
+  int len;
+  static const char json_format[] =
+    R"====({"type":1,"speed":%u,"gear":"%s","rpm":%u,"drs":%u,"revLights":%u,"engineTemp":%u})====";
+  static const char json_format_temp[] =
+    R"====({"type":4,"brakes":"%u,%u,%u,%u","tyres_surface":"%u,%u,%u,%u","tyres_inner":"%u,%u,%u,%u"})====";
+
+  if (telemetry == NULL) {
+    telemetry = &last_telemetry;
+    len = snprintf(json, sizeof(json), json_format,
+        telemetry->m_speed, GEAR_NAMES[telemetry->m_gear & 0x0F],
+        telemetry->m_engineRPM, telemetry->m_drs,
+        telemetry->m_revLightsPercent, telemetry->m_engineTemperature);
+    if (len > 0) webSocket.broadcastTXT(json, len);
+    len = snprintf(json, sizeof(json), json_format_temp,
+        telemetry->m_brakesTemperature[0], telemetry->m_brakesTemperature[1],
+        telemetry->m_brakesTemperature[2], telemetry->m_brakesTemperature[3],
+        telemetry->m_tyresSurfaceTemperature[0], telemetry->m_tyresSurfaceTemperature[1],
+        telemetry->m_tyresSurfaceTemperature[2], telemetry->m_tyresSurfaceTemperature[3],
+        telemetry->m_tyresInnerTemperature[0], telemetry->m_tyresInnerTemperature[1],
+        telemetry->m_tyresInnerTemperature[2], telemetry->m_tyresInnerTemperature[3]);
+    if (len > 0) webSocket.broadcastTXT(json, len);
+  }
+  else {
+    if (memcmp(&last_telemetry, telemetry, sizeof(last_telemetry))) {
+      uint16_t speed_kph = telemetry->m_speed;
+      uint8_t currentGear = telemetry->m_gear & 0x0F;
+      mx.clear();
+      draw_speed(speed_kph);
+      draw_gear(GEAR_NAMES[currentGear]);
+      len = snprintf(json, sizeof(json), json_format,
+          speed_kph, GEAR_NAMES[currentGear], telemetry->m_engineRPM,
+          telemetry->m_drs, telemetry->m_revLightsPercent,
+          telemetry->m_engineTemperature);
+      // Broadcast sends to all connected clients.
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      len = snprintf(json, sizeof(json), json_format_temp,
+          telemetry->m_brakesTemperature[0], telemetry->m_brakesTemperature[1],
+          telemetry->m_brakesTemperature[2], telemetry->m_brakesTemperature[3],
+          telemetry->m_tyresSurfaceTemperature[0], telemetry->m_tyresSurfaceTemperature[1],
+          telemetry->m_tyresSurfaceTemperature[2], telemetry->m_tyresSurfaceTemperature[3],
+          telemetry->m_tyresInnerTemperature[0], telemetry->m_tyresInnerTemperature[1],
+          telemetry->m_tyresInnerTemperature[2], telemetry->m_tyresInnerTemperature[3]);
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      memcpy(&last_telemetry, telemetry, sizeof(last_telemetry));
+    }
+  }
+}
+
+void send_car_setup(struct CarSetupData *carsetup) {
+  static struct CarSetupData last_carsetup;
+  char json[256+1];
+  int len;
+  static const char json_format[] =
+    R"====({"type":5,"diff_on_throttle":%u,"diff_off_throttle":"%u"})====";
+
+  if (carsetup == NULL) {
+    carsetup = &last_carsetup;
+    len = snprintf(json, sizeof(json), json_format,
+        carsetup->m_onThrottle, carsetup->m_offThrottle);
+    if (len > 0) webSocket.broadcastTXT(json, len);
+  }
+  else {
+    if (memcmp(&last_carsetup, carsetup, sizeof(last_carsetup))) {
+      len = snprintf(json, sizeof(json), json_format,
+        carsetup->m_onThrottle, carsetup->m_offThrottle);
+      // Broadcast sends to all connected clients.
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      memcpy(&last_carsetup, carsetup, sizeof(last_carsetup));
+    }
+  }
+}
+
+void send_car_motion(struct CarMotionData *carmotion) {
+  static struct CarMotionData last_carmotion;
+  char json[256+1];
+  int len;
+  static const char json_format[] =
+    R"====({"type":6,"orientation":"%.2f,%.2f,%.2f"})====";
+
+  if (carmotion == NULL) {
+    carmotion = &last_carmotion;
+    len = snprintf(json, sizeof(json), json_format,
+        carmotion->m_roll, carmotion->m_pitch, carmotion->m_yaw);
+    if (len > 0) webSocket.broadcastTXT(json, len);
+  }
+  else {
+    if (memcmp(&last_carmotion, carmotion, sizeof(last_carmotion))) {
+      len = snprintf(json, sizeof(json), json_format,
+          carmotion->m_roll, carmotion->m_pitch, carmotion->m_yaw);
+      // Broadcast sends to all connected clients.
+      if (len > 0) webSocket.broadcastTXT(json, len);
+      memcpy(&last_carmotion, carmotion, sizeof(last_carmotion));
+    }
+  }
+}
+
 void loop() {
   // if there's data available, read a packet
   int packetSize = Udp.parsePacket();
@@ -326,30 +645,43 @@ void loop() {
       if (header->m_packetFormat == 2020) {
         uint8_t myCar = header->m_playerCarIndex;
         switch (header->m_packetId) {
+          case 0:
+            {
+              struct PacketMotionData *p;
+              p = (struct PacketMotionData *)packetBuffer;
+              struct CarMotionData *carmotion = &(p->m_carMotionData[myCar]);
+#if DEBUG_PRINT
+              Serial.printf("Roll = %f, Pitch = %f, Yaw = %f\n", \
+                  carmotion->m_roll, carmotion->m_pitch, carmotion->m_yaw);
+#endif
+              send_car_motion(carmotion);
+            }
+            break;
+          case 5:
+            {
+              struct PacketCarSetupData *p;
+              p = (struct PacketCarSetupData *)packetBuffer;
+              struct CarSetupData *carsetup = &(p->m_carSetups[myCar]);
+#if DEBUG_PRINT
+              Serial.printf("Diff on throttle = %u Diff off throttle %u\n", \
+                  carsetup->m_onThrottle, carsetup->m_offThrottle);
+#endif
+              send_car_setup(carsetup);
+            }
+            break;
           case 6:
             {
               struct PacketCarTelemetryData *p;
               p = (struct PacketCarTelemetryData *)packetBuffer;
               struct CarTelemetryData *telemetry = &(p->m_carTelemetryData[myCar]);
-#if 0
+#if DEBUG_PRINT
               Serial.printf("Speed = %u RPM %u Gear %d Rev %% %u\n", \
                   telemetry->m_speed, telemetry->m_engineRPM, \
                   telemetry->m_gear, telemetry->m_revLightsPercent);
 #endif
               draw_rev(telemetry->m_revLightsPercent);
 
-              uint16_t speed_kph = telemetry->m_speed;
-              static uint16_t last_speed_kph = 10000;
-              uint8_t currentGear = telemetry->m_gear & 0x0F;
-              static uint8_t last_gear = 255;
-              if ((speed_kph != last_speed_kph) ||
-                  (currentGear != last_gear)) {
-                mx.clear();
-                draw_speed(speed_kph);
-                draw_gear(GEAR_NAMES[currentGear]);
-                last_speed_kph = speed_kph;
-                last_gear = currentGear;
-              }
+              send_car_telemetry(telemetry);
             }
             break;
           case 7:
@@ -357,10 +689,11 @@ void loop() {
               struct PacketCarStatusData *p;
               p = (struct PacketCarStatusData *)packetBuffer;
               struct CarStatusData *status = &(p->m_carStatusData[myCar]);
-#if 0
+#if DEBUG_PRINT
               Serial.printf("Fuel Mix = %u Front Brake Bias %u\n", \
                   status->m_fuelMix, status->m_frontBrakeBias);
 #endif
+              send_car_status(status);
             }
             break;
           default:
@@ -369,4 +702,6 @@ void loop() {
       }
     }
   }
+
+  web_server_loop();
 }

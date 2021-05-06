@@ -108,4 +108,22 @@ Drive 16 WS2812 RGB LEDs based on rev lights percent.
 ./f12020/f12020matrix/f12020matrix.ino
 
 Drive 32x8 LED matrix based on gear and KPH. Also drive 16 WS2812 RGB LEDs
-based on engine RPM.
+based on rev lights %. The ESP8266's IP address is displayed on power up
+on the 32x8 matrix. The IP address must be plugged into the F1 2020 UDP
+configuration screen. The screen is cleared when the first UDP packet is
+received.
+
+Now includes a web interface for showing various telemetry results including
+
+* Front brake bias
+* Fuel mix
+* DRS
+* Engine temperature
+* ERS
+* Tire temperatures
+* Orientation (Roll, pitch, yaw)
+
+Connect to the ESP8266's IP address to see the web page. The web page is pure
+text for debugging but it could be decorated with graphics if desired.
+
+![Table with telemetry results](./images/telemetry_page.gif)
